@@ -1,6 +1,6 @@
-# GitPull - Pull a repository to your web server and unpack it!
+# gitpull.php - Pull a repository to your web server and unpack it!
 
-I created this script to quickly and easily replace TYPO3 extensions into my TYPO3 installation after committing them to Github. It can certainly be used for other applications as well.
+I created this PHP script to quickly and easily replace TYPO3 extensions into my TYPO3 installation after committing them to Github. It can certainly be used for other applications as well.
 
 ## 🚀 Features
 

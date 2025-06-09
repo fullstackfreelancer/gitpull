@@ -3,32 +3,61 @@ ini_set('display_errors', '1');
 ini_set('display_startup_errors', '1');
 error_reporting(E_ALL);
 /*
-* Script to pull a TYPO3 extension from Github to your TYPO3 installation
+* Script to pull a repository from Github to your web server
 * Written by Simon Köhler / kohlercode.com
 *
 * Basic script configuration
 */
 
 // URL of the ZIP file of a git repository
-$conf['download_url'] = 'https://github.com/fullstackfreelancer/showcase/archive/master.zip';
+$conf['download_url'] = 'https://github.com/fullstackfreelancer/business_theme/archive/master.zip';
 $conf['root'] = dirname(__FILE__).'/';
+
 // Target directory
 $conf['target_dir'] = 'typo3conf/ext/';
-$conf['temp_filename'] = 'showcase.zip';
-$conf['extension_key'] = 'showcase';
+
+// Temporary file name
+$conf['temp_filename'] = 'business_theme.zip';
+
+// Target folder name
+$conf['folder_name'] = 'business_theme';
 
 /*
+* ----------------------------------------------------------
 * From here better be a PHP expert before you change things!
+* ----------------------------------------------------------
 */
 
-class_exists('ZipArchive') ?: die('PHP ZIP Module not loaded!');
-ini_get('allow_url_fopen') ?: die('PHP function "allow_url_fopen" not enabled!');
-file_exists($conf['root'].$conf['target_dir']) && is_writable($conf['root'].$conf['target_dir']) ?: die('Folder '.$conf['root'].$conf['target_dir'].' not found or not writable!');
+$errors = [];
+
+// Check if ZIP extension is available
+if (!class_exists('ZipArchive')) {
+    $errors[] = 'ERROR: PHP ZIP module not loaded!';
+}
+
+// Check if allow_url_fopen is enabled (may still be useful depending on other code)
+if (!ini_get('allow_url_fopen')) {
+    $errors[] = 'ERROR: PHP setting "allow_url_fopen" is not enabled!';
+}
+
+// Check if target directory exists and is writable
+$targetPath = $conf['root'] . $conf['target_dir'];
+if (!file_exists($targetPath) || !is_writable($targetPath)) {
+    $errors[] = "ERROR: Folder $targetPath not found or not writable!";
+}
+
+// If any errors occurred, display them and exit safely
+if (!empty($errors)) {
+    foreach ($errors as $err) {
+        echo $err . "<br>\n";
+    }
+    exit(1); // Graceful exit with error code
+}
 
 $output = "Url: \t\t\t".$conf['download_url']."\n";
 $output .= "Target: \t\t<strong>".$conf['root'].$conf['target_dir']."</strong>\n";
 $output .= "Root: \t\t\t".$conf['root']."\n";
-$output .= "Ext: \t\t\t".$conf['extension_key']."\n";
+$output .= "Ext: \t\t\t".$conf['folder_name']."\n";
 $output .= "\n----------------\n\n";
 
 class GitPull {
@@ -43,33 +72,51 @@ class GitPull {
 
     // Recursive deletion of directory
     private function rrmdir($dir) {
-        if (is_dir($dir)) {
-          $objects = scandir($dir);
-          foreach ($objects as $object) {
-            if ($object != "." && $object != "..") {
-              if (filetype($dir."/".$object) == "dir")
-                 rmdir($dir."/".$object);
-              else unlink($dir."/".$object);
+        if (!is_dir($dir)) return;
+
+        $objects = scandir($dir);
+        foreach ($objects as $object) {
+            if ($object === '.' || $object === '..') {
+                continue;
             }
-          }
-          reset($objects);
-          rmdir($dir);
+
+            $path = $dir . DIRECTORY_SEPARATOR . $object;
+            if (is_dir($path)) {
+                $this->rrmdir($path); // recurse
+            } else {
+                unlink($path); // delete file
+            }
         }
+        rmdir($dir); // now empty, can remove
     }
 
+    public function downloadFile() {
+        $temp = $this->conf['root'] . $this->conf['target_dir'] . $this->conf['temp_filename'];
 
-    public function downloadFile(){
-        $temp = $this->conf['root'].$this->conf['target_dir'].$this->conf['temp_filename'];
-        $file = @file_get_contents($this->conf['download_url']);
+        $ch = curl_init($this->conf['download_url']);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true); // follow redirects (e.g., GitHub might redirect)
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);   // connection timeout
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);          // response timeout
+        curl_setopt($ch, CURLOPT_USERAGENT, 'GitPullScript/1.0'); // required by GitHub sometimes
 
-        if($file){
-            file_put_contents($temp, $file) ?: die("ERROR: Error writing ZIP file in target folder!\n");
-            $this->messages[] = "SUCCESS: \t\t".$temp." created\n";
+        $file = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+
+        if ($httpCode !== 200 || $file === false) {
+            $this->errors[] = "ERROR: Download failed with HTTP status $httpCode. cURL error: $curlError";
+            return false;
         }
-        else{
-            die('ERROR: Error downloading file from source server!');
-            $this->errors[] = "ERROR: \t\tError downloading file from source server!\n";
+
+        if (file_put_contents($temp, $file) === false) {
+            $this->errors[] = "ERROR: Failed to write ZIP file to target path: $temp";
+            return false;
         }
+
+        $this->messages[] = "SUCCESS: \t\t$temp created via cURL";
+        return true;
     }
 
     public function unzipFile(){
@@ -113,22 +160,42 @@ class GitPull {
     * 2. rename the downloaded directory with the name "(extkey)-master" into "(extkey)"
     */
 
-    public function renameDirectories(){
+    public function renameDirectories() {
+        $targetDir = $this->conf['root'] . $this->conf['target_dir'];
+        $original = $targetDir . $this->conf['folder_name'];
+        $backup = $original . '-backup';
 
-        $original = $this->conf['root'].$this->conf['target_dir'].$this->conf['extension_key'];
-        $backup = $original.'-backup';
-        $downloaded = $original.'-master';
+        // Detect the extracted folder (e.g., -master, -main, etc.)
+        $extractedFolder = '';
+        $pattern = $targetDir . $this->conf['folder_name'] . '-*';
+        foreach (glob($pattern, GLOB_ONLYDIR) as $folder) {
+            $extractedFolder = $folder;
+            break;
+        }
 
-        // If original extension extists, add slash and string to the directory
-        if(file_exists($original)){
-            if(rename($original,$backup)){
-                $this->messages[] = "SUCCESS: \t\t".$original.' renamed to '.$backup."\n";
+        if (!$extractedFolder || !is_dir($extractedFolder)) {
+            $this->errors[] = "ERROR: \t\tExtracted folder not found! Expected something like {$pattern}\n";
+            return;
+        }
+
+        // Rename original to backup
+        if (file_exists($original)) {
+            if (file_exists($backup)) {
+                $this->rrmdir($backup); // Clean previous backup
+            }
+            if (rename($original, $backup)) {
+                $this->messages[] = "SUCCESS: \t\t$original renamed to $backup\n";
+            } else {
+                $this->errors[] = "ERROR: \t\tCould not rename $original to $backup\n";
+                return;
             }
         }
 
-        // Rename the downloaded directory with the original name
-        if(rename($downloaded,$original)){
-            $this->messages[] = "SUCCESS: \t\t".$downloaded.' renamed to '.$original."\n";
+        // Rename the extracted to original
+        if (rename($extractedFolder, $original)) {
+            $this->messages[] = "SUCCESS: \t\t$extractedFolder renamed to $original\n";
+        } else {
+            $this->errors[] = "ERROR: \t\tCould not rename $extractedFolder to $original\n";
         }
     }
 
@@ -138,7 +205,7 @@ class GitPull {
 
     public function deleteBackup(){
 
-        $file = $this->conf['root'].$this->conf['target_dir'].$this->conf['extension_key'].'-backup';
+        $file = $this->conf['root'].$this->conf['target_dir'].$this->conf['folder_name'].'-backup';
 
         if(file_exists($file)){
             $this->rrmdir($file);
@@ -167,12 +234,13 @@ class GitPull {
 }
 
 $gitpull = new GitPull($conf);
-$action = @$_GET['a'];
+$action = $_GET['a'] ?? '';
+$action = preg_match('/^[a-z]+$/', $action) ? $action : '';
 $link = '';
 
 switch ($action) {
     case 'execute':
-        if(!file_exists($conf['root'].$conf['target_dir'].$conf['extension_key'].'-backup')){
+        if(!file_exists($conf['root'].$conf['target_dir'].$conf['folder_name'].'-backup')){
             $gitpull->downloadFile();
             $gitpull->unzipFile();
             $gitpull->removeTempFile();
